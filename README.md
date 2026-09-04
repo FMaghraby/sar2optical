@@ -1,5 +1,53 @@
-# sar2optical
-SAR-to-Optical Self-attention Res-UNet for Grayscale Images Colorization implementation code
-Abstract Synthetic Aperture Radar (SAR) imagery provides all weather, day and night Earth observation but lacks the spectral richness of optical imagery, which limits interpretability in many applications. This project presents an enhanced SAR-to-Optical (S2O) translation model architecture based on a conditional Generative Adversarial Network (cGAN) with a Residual U-Net generator augmented by self attention, which we will call S2O-SARUNet. Using the SEN1–2 dataset, comprising globally distributed, multi season SAR–optical pairs, and integrating VGG based perceptual loss, spectral consistency constraints, cosine-annealed learning rates, and early stopping to maximize structural and spectral fidelity on GPU hardware (RTX A2000, 4 GB). Our model (S2O-SARUNet) achieves an average SSIM of ∼0.770 and PSNR of ∼25.85 dB, with a peak SSIM of 0.961 and best case PSNR of 27.5 dB, exceeding existing benchmark baseline cGAN, as well as transformer augmented, and diffusion refined variants. Ablation analyses indicate that these improvements are primarily driven by the integration of self-attention for global context modeling and residual connections for stable feature propagation.
-Implementation details Hardware: Intel Core i7-11850H (16 threads), 32 GB RAM, NVIDIA RTX A2000 (4 GB) VRAM, 1 TB SSD. Software: Anaconda 2.0, Python 3.7, PyTorch 1.12, CUDA 11.3, cuDNN 8.2 on Windows 10 Pro. Splits: 70%/20%/10%. Optimizer: Adam (β1=0.5, β2=0.999). LR schedule: cosine annealing. Early stopping: 15 epochs without SSIM improvement. Resolution: 128×128. Batch size: 4. Max epochs: 300.
-Dataset Aviliable at https://mediatum.ub.tum.de/1436631 use password "m1436631" when needed
+# SAR-to-Optical Self-Attention ResUNet for Grayscale Image Colorization
+
+## Abstract
+
+Synthetic Aperture Radar (SAR) imagery provides all-weather, day-and-night Earth observation capabilities but lacks the spectral richness of optical imagery, which can limit visual interpretability. This project implements *S2O-SARUNet, a conditional Generative Adversarial Network (cGAN) for SAR-to-Optical (S2O) image translation using the **SEN1-2 dataset*.
+
+The generator follows a *U-Net encoder-decoder architecture* with multi-scale skip connections, *single-head spatial self-attention (SHSA)* at the bottleneck, and *four residual blocks* for feature refinement. A *spectrally normalized conditional PatchGAN discriminator* provides patch-level adversarial supervision. Training incorporates *L1 reconstruction loss, SSIM loss, VGG-based perceptual loss, cosine-annealed learning rates, and early stopping*.
+
+The reported evaluation achieved an average *SSIM of 0.770* and *PSNR of 25.85 dB, with complementary **LPIPS = 0.302, FID = 114.67, SAM = 8.60°, and ERGAS = 36.59*. The study also evaluates baseline cGAN, transformer-augmented, and diffusion-refinement configurations.
+
+## Implementation Details
+
+•⁠  ⁠*Architecture:* Conditional GAN (cGAN)
+•⁠  ⁠*Generator:* U-Net + SHSA + 4 bottleneck residual blocks
+•⁠  ⁠*Discriminator:* Spectrally normalized conditional PatchGAN
+•⁠  ⁠*Input:* SAR grayscale image
+•⁠  ⁠*Output:* 3-channel RGB optical image
+•⁠  ⁠*Image resolution:* 128 × 128
+•⁠  ⁠*Dataset split:* 70% training / 20% validation / 10% testing
+•⁠  ⁠*Batch size:* 4
+•⁠  ⁠*Optimizer:* Adam (⁠ β1 = 0.5 ⁠, ⁠ β2 = 0.999 ⁠)
+•⁠  ⁠*Learning rate:* ⁠ 2e-4 ⁠ with cosine annealing
+•⁠  ⁠*Maximum epochs:* 300
+•⁠  ⁠*Early stopping:* 15 epochs without sufficient validation SSIM improvement
+•⁠  ⁠*Hardware:* NVIDIA RTX A2000 (4 GB VRAM), Intel Core i7-11850H, 32 GB RAM
+•⁠  ⁠*Primary validation metrics:* SSIM and PSNR
+•⁠  ⁠*Additional evaluation metrics:* LPIPS, FID, SAM, and ERGAS
+
+## Dataset
+
+The project uses the *SEN1-2 SAR–Optical dataset*, containing geographically distributed SAR and optical image pairs acquired across different seasons.
+
+*Dataset:*  
+https://mediatum.ub.tum.de/1436631
+
+Use password ⁠ m1436631 ⁠ when required.
+
+The implementation expects PNG SAR and optical images and uses a fixed *70% / 20% / 10%* train-validation-test split.
+
+## Model Overview
+
+SAR Image  
+→ Encoder  
+→ Single-Head Spatial Self-Attention  
+→ 4 Residual Blocks  
+→ U-Net Decoder + Skip Connections  
+→ Generated Optical Image
+
+During training, the conditional PatchGAN discriminator receives:
+
+⁠ [SAR, Real Optical] ⁠ or ⁠ [SAR, Generated Optical] ⁠
+
+This conditioning explicitly guides the adversarial learning process using the input SAR image.
