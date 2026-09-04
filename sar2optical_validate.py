@@ -6,11 +6,11 @@
 
 
 # =======================================================================================
-# S2O-SARUNet - Testing and Statistical Evaluation
+# S2O-SARUNet - Validation and Statistical Evaluation
 # =======================================================================================
 # Purpose:
 #   This script evaluates the trained S2O-SARUNet generator on the independent
-#   10% test partition or, optionally, on a user-defined external test dataset.
+#   20% validation partition saved during the 70/20/10 dataset split.
 #
 # Model:
 #   U-Net Generator with Single-Head Spatial Self-Attention (SHSA) and
@@ -25,19 +25,14 @@
 #   - ERGAS  : RGB radiometric reconstruction error           [Lower is better]
 #
 # Statistical Analysis:
-#   SSIM, PSNR, LPIPS, SAM, and ERGAS are evaluated per test image and reported
-#   using mean, standard deviation, min-max range, and 95% confidence interval.
-#   FID is computed over the complete test-set distributions and is therefore
-#   reported as a dataset-level point estimate.
+#   SSIM, PSNR, LPIPS, SAM, and ERGAS are calculated per validation image and
+#   summarized using mean, standard deviation, min-max range, and 95% confidence
+#   interval. FID is calculated over the complete validation-set distributions
+#   and is therefore reported as a dataset-level point estimate.
 #
-# Qualitative Evaluation:
-#   For each selected example, the script displays:
-#       SAR Input | Generated Optical Image | Ground-Truth Optical Image
-#   together with the corresponding SSIM, PSNR, LPIPS, SAM, and ERGAS scores.
-#
-# Test Data:
-#   Default : Uses the saved 10% test manifest generated during training.
-#   Custom  : Set USE_CUSTOM_TEST_DIR = True and specify new SAR/optical folders.
+# Validation Data:
+#   Uses the saved 20% validation manifest generated during training to ensure
+#   consistent evaluation using the same validation partition.
 #
 # Image Configuration:
 #   SAR Input       : 1-channel grayscale, [0, 1]
@@ -45,9 +40,15 @@
 #   Generated Image : 3-channel RGB, Tanh output [-1, 1]
 #   Metric Range    : Generated/reference images converted to [0, 1] as required.
 #
+# Model Selection:
+#   Loads the best checkpoint selected during training according to validation
+#   SSIM improvement and the configured early-stopping criterion.
+#
 # Device:
 #   Automatically uses CUDA when available; designed for NVIDIA RTX A2000 4 GB.
 # =======================================================================================
+
+
 
 
 import csv
@@ -57,7 +58,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
-import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from skimage.metrics import structural_similarity, peak_signal_noise_ratio
 import lpips
@@ -65,37 +65,17 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 from sar2optical_model import GeneratorUNet
 
 OUTPUT_DIR = Path(r"C:/S2O/SEN12/training_output")
-TEST_MANIFEST = OUTPUT_DIR / "split_testing_10.csv"
+VAL_MANIFEST = OUTPUT_DIR / "split_validation_20.csv"
 CHECKPOINT = OUTPUT_DIR / "checkpoint_best.pth"
 IMAGE_SIZE = 128
 BATCH_SIZE = 4
 NUM_WORKERS = 0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Set True after training to test a different paired directory.
-USE_CUSTOM_TEST_DIR = False
-CUSTOM_SAR_DIR = Path(r"C:/S2O/SEN12/s1_t_20")
-CUSTOM_OPTICAL_DIR = Path(r"C:/S2O/SEN12/s2_t_20")
-MAX_DISPLAY = 20
-
 
 def read_manifest(path):
     with open(path, newline="", encoding="utf-8") as f:
         return [(Path(r["sar_path"]), Path(r["optical_path"])) for r in csv.DictReader(f)]
-
-
-def custom_pairs(sar_dir, optical_dir):
-    optical_index = {p.name: p for p in optical_dir.rglob("*.png")}
-    pairs = []
-    for s in sorted(sar_dir.rglob("*.png")):
-        if "_s1_" not in s.name:
-            continue
-        o = optical_index.get(s.name.replace("_s1_", "_s2_"))
-        if o is not None:
-            pairs.append((s, o))
-    if not pairs:
-        raise RuntimeError("No custom SAR/optical pairs found.")
-    return pairs
 
 
 class DS(Dataset):
@@ -160,13 +140,14 @@ def ergas(pred, ref, ratio=1.0, eps=1e-8):
     return float((100.0 / ratio) * np.sqrt(np.mean((rmse / mean_ref) ** 2)))
 
 
-pairs = custom_pairs(CUSTOM_SAR_DIR, CUSTOM_OPTICAL_DIR) if USE_CUSTOM_TEST_DIR else read_manifest(TEST_MANIFEST)
+pairs = read_manifest(VAL_MANIFEST)
 loader = DataLoader(
     DS(pairs), batch_size=BATCH_SIZE, shuffle=False,
     num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available()
 )
+
 print(f"Device: {DEVICE}")
-print(f"Test pairs: {len(pairs)}")
+print(f"Validation pairs: {len(pairs)}")
 
 G = GeneratorUNet().to(DEVICE)
 ck = torch.load(CHECKPOINT, map_location=DEVICE)
@@ -184,30 +165,29 @@ fid_metric.reset()
 
 ssim_vals, psnr_vals, lpips_vals, sam_vals, ergas_vals = [], [], [], [], []
 rows = []
-displayed = 0
 
 with torch.no_grad():
-    for sar, opt, sar_paths, opt_paths in tqdm(loader, desc="Testing"):
+    for sar, opt, sar_paths, opt_paths in tqdm(loader, desc="Validation"):
         sar = sar.to(DEVICE, non_blocking=True)
         opt = opt.to(DEVICE, non_blocking=True)
         fake = G(sar)
 
         fake01 = to01(fake)
         opt01 = to01(opt)
+
+        # LPIPS expects RGB tensors in [-1,1].
         lp_batch = lpips_metric(fake, opt).view(-1)
 
-        # Dataset-level FID accumulation.
+        # FID is a dataset-level distribution metric.
         fid_metric.update(opt01, real=True)
         fid_metric.update(fake01, real=False)
 
         fn = fake01.cpu().numpy()
         on = opt01.cpu().numpy()
-        sn = sar.cpu().numpy()
 
         for i in range(fn.shape[0]):
             pred = np.transpose(fn[i], (1, 2, 0))
             ref = np.transpose(on[i], (1, 2, 0))
-            sar_img = sn[i, 0]
 
             ssim_v = structural_similarity(ref, pred, channel_axis=2, data_range=1.0)
             psnr_v = peak_signal_noise_ratio(ref, pred, data_range=1.0)
@@ -222,31 +202,6 @@ with torch.no_grad():
             ergas_vals.append(ergas_v)
             rows.append([sar_paths[i], opt_paths[i], ssim_v, psnr_v, lpips_v, sam_v, ergas_v])
 
-            if displayed < MAX_DISPLAY:
-                fig = plt.figure(figsize=(13, 4))
-                ax = fig.add_subplot(1, 3, 1)
-                ax.imshow(sar_img, cmap="gray")
-                ax.set_title("SAR Input")
-                ax.axis("off")
-
-                ax = fig.add_subplot(1, 3, 2)
-                ax.imshow(pred)
-                ax.set_title(
-                    "Generated Optical\n"
-                    f"SSIM={ssim_v:.4f} | PSNR={psnr_v:.2f} dB\n"
-                    f"LPIPS={lpips_v:.4f} | SAM={sam_v:.2f}° | ERGAS={ergas_v:.2f}"
-                )
-                ax.axis("off")
-
-                ax = fig.add_subplot(1, 3, 3)
-                ax.imshow(ref)
-                ax.set_title("Original Optical")
-                ax.axis("off")
-
-                fig.tight_layout()
-                plt.show()
-                displayed += 1
-
 fid_value = float(fid_metric.compute().item())
 metrics = {
     "SSIM": stats(ssim_vals),
@@ -257,7 +212,7 @@ metrics = {
 }
 
 print("\n" + "=" * 104)
-print("TEST-SET STATISTICAL EVALUATION")
+print("VALIDATION-SET STATISTICAL EVALUATION")
 print("=" * 104)
 print(f"{'Metric':<10}{'Average':>14}{'Std':>14}{'Min':>14}{'Max':>14}{'95% CI':>32}")
 print("-" * 104)
@@ -269,16 +224,16 @@ for name, r in metrics.items():
 print("-" * 104)
 print(f"{'FID':<10}{fid_value:>14.4f}   (dataset-level point estimate)")
 print("=" * 104)
-print("Note: SSIM, PSNR, LPIPS, SAM, and ERGAS statistics are per-image.")
-print("      FID is computed once over the full test distributions, so per-image avg/std/min-max/CI95 are not defined.")
+print("Note: SSIM, PSNR, LPIPS, SAM, and ERGAS statistics are per-image. ")
+print("      FID is computed once over the full validation distributions, so per-image avg/std/min-max/CI95 are not defined.")
 
-result_path = OUTPUT_DIR / ("custom_test_results_all_metrics.csv" if USE_CUSTOM_TEST_DIR else "test_results_all_metrics.csv")
-with open(result_path, "w", newline="", encoding="utf-8") as f:
+results_path = OUTPUT_DIR / "validation_results_all_metrics.csv"
+with open(results_path, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
     w.writerow(["sar_path", "optical_path", "ssim", "psnr_db", "lpips", "sam_deg", "ergas"])
     w.writerows(rows)
 
-summary_path = OUTPUT_DIR / ("custom_test_summary_all_metrics.csv" if USE_CUSTOM_TEST_DIR else "test_summary_all_metrics.csv")
+summary_path = OUTPUT_DIR / "validation_summary_all_metrics.csv"
 with open(summary_path, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
     w.writerow(["metric", "average", "std", "min", "max", "ci95_lower", "ci95_upper"])
@@ -286,5 +241,5 @@ with open(summary_path, "w", newline="", encoding="utf-8") as f:
         w.writerow([name, *r])
     w.writerow(["FID", fid_value, "", "", "", "", ""])
 
-print("Saved per-image results :", result_path)
+print("Saved per-image results :", results_path)
 print("Saved summary           :", summary_path)
